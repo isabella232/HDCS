@@ -38,7 +38,14 @@ HDCSCore::HDCSCore(std::string name, std::string config_name) {
   std::string pool_name = config->configValues["rbd_pool_name"];
   std::string volume_name = config->configValues["rbd_volume_name"];
 
-  block_guard = new BlockGuard(total_size, block_size);
+  //connect to its replication_nodes
+  if (config->configValues["role"].compare(std::string("hdcs_master")) == 0) {
+    connect_to_replica(name);
+  }
+
+  block_guard = new BlockGuard(total_size, block_size,
+                               replication_core_map.size(),
+                               std::move(replication_core_map));
   BlockMap* block_ptr_map = block_guard->get_block_map();
 
   if (cache_policy_mode) {
@@ -65,16 +72,16 @@ HDCSCore::HDCSCore(std::string name, std::string config_name) {
   go = true;
   main_thread = new std::thread(std::bind(&HDCSCore::process, this));
 
-  //connect to its replication_nodes
-  if (config->configValues["role"].compare(std::string("hdcs_master")) == 0) {
-    connect_to_replica(name);
-  }
 }
 
 HDCSCore::~HDCSCore() {
   go = false;
   main_thread->join();
   delete hdcs_op_threads;
+  for (auto& hdcs_replica : replication_core_map) {
+    ((hdcs_ioctx_t*)hdcs_replica.second)->conn->close();
+    free((hdcs_ioctx_t*)hdcs_replica.second);
+  }
   delete policy;
   delete block_guard;
   delete main_thread;
@@ -107,36 +114,30 @@ void HDCSCore::process() {
   while(go){
     Request *req = (Request*)request_queue.dequeue();
     if (req != nullptr) {
+      //TODO: add TS;
+      if (req->offset == 871018496) {
+      struct timespec spec;
+      clock_gettime(CLOCK_REALTIME, &spec);
+      fprintf(stderr, "%lu: hdcs dequeue %lu - %lu\n", (spec.tv_sec * 1000000000L + spec.tv_nsec), req->offset, req->offset + req->length);
+      }
       process_request(req);
+      //TODO: add TS;
+      if (req->offset == 871018496) {
+      struct timespec spec;
+      clock_gettime(CLOCK_REALTIME, &spec);
+      fprintf(stderr, "%lu: hdcs complete process_request %lu - %lu\n", (spec.tv_sec * 1000000000L + spec.tv_nsec), req->offset, req->offset + req->length);
+      }
     }
   }
 }
 
 void HDCSCore::process_request(Request *req) {
-  if (req->io_type == IO_TYPE_WRITE) {
-    int replica_size = 1 + replication_core_map.size();
-    void* req_comp = req->comp;
-    AioCompletion *comp = new AioCompletionImp([this, req_comp](ssize_t r){
-      ((AioCompletion*)req_comp)->complete(r); 
-    }, replica_size); 
-
-    hdcs_ioctx_t* io_ctx;
-    for (auto& replica_node : replication_core_map) {
-      io_ctx = (hdcs_ioctx_t*)replica_node.second;
-      hdcs::HDCS_REQUEST_CTX msg_content(HDCS_WRITE, io_ctx->hdcs_inst,
-                                         comp, req->offset, req->length, req->data);
-      io_ctx->conn->aio_communicate(std::move(std::string(msg_content.data(), msg_content.size())));
-    }
-    req->comp = comp;
-  }
-  // Request -> list<BlockRequest> -> list<BlockOp>
   //std::mutex block_request_list_lock;
   //BlockRequestList block_request_list;
   std::lock_guard<std::mutex> lock(block_request_list_lock);
-  block_guard->create_block_requests(req, &block_request_list);
+  block_guard->create_block_requests(std::shared_ptr<Request>(req), &block_request_list);
 
   for (BlockRequestList::iterator it = block_request_list.begin(); it != block_request_list.end();) { 
-    log_print("block %lu: %lu-%lu", it->block->block_id, it->offset, it->size); 
     if (!it->block->in_discard_process) {
       map_block(std::move(*it));
       block_request_list.erase(it++);
@@ -179,6 +180,7 @@ void HDCSCore::aio_read (char* data, uint64_t offset, uint64_t length,  void* ar
 
 void HDCSCore::aio_write (char* data, uint64_t offset, uint64_t length,  void* arg) {
   Request *req = new Request(IO_TYPE_WRITE, data, offset, length, arg);
+  //TODO: add TS;
   request_queue.enqueue((void*)req);
   //process_request(req);
 }

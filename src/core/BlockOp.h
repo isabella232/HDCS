@@ -136,10 +136,6 @@ public:
   void send() {
     log_print("PromoteBlockFromBackend block: %lu", block->block_id);
     uint64_t block_id = block->block_id;
-    /*AioCompletion* on_finish = new AioCompletion(
-      [this](ssize_t r){
-        complete(r);
-    });*/ 
     int ret = back_store->block_read(block_id, data);
     complete(ret);
   }
@@ -242,6 +238,7 @@ public:
   }
   void send() {
     log_print("WriteBlockToCache block: %lu", block->block_id);
+    //int ret = 0;
     int ret = data_store->block_write(entry_id, data);
     complete(ret);
   }
@@ -468,6 +465,23 @@ private:
   store::DataStore *back_store;
 };
 
+class WaitForAioCompletion : public BlockOp{
+public:
+  WaitForAioCompletion(std::shared_ptr<AioCompletion> comp,
+                     Block* block,
+                     BlockRequest* block_request,
+                     BlockOp* block_op) :
+                     BlockOp(block, block_request, block_op),
+                     comp(comp) {
+  }
+  void send() {
+    comp->complete(0);
+    comp->wait_for_complete();
+    complete(0);
+  }
+private:
+  std::shared_ptr<AioCompletion> comp;
+};
 } //core
 
 } //hdcs

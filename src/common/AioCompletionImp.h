@@ -4,13 +4,17 @@
 #include "AioCompletion.h"
 #include <atomic>
 #include <functional>
+#include <mutex>
+#include <condition_variable>
+#include <chrono>
 
 namespace hdcs{
 
 class AioCompletionImp : public AioCompletion {
 public:
-  AioCompletionImp() : defined(false), Callback(nullptr), data(nullptr), shared_count(1) {}
-  AioCompletionImp(std::function<void(ssize_t)>&& Callback, int shared_count = 1) : defined(true), Callback(Callback), data(nullptr), shared_count(shared_count) {}
+  AioCompletionImp() : defined(false), Callback(nullptr), data(nullptr), shared_count(1), delete_when_complete(true) {
+  }
+  AioCompletionImp(std::function<void(ssize_t)>&& Callback, int shared_count = 1, bool delete_when_complete = true) : defined(true), Callback(Callback), data(nullptr), shared_count(shared_count), delete_when_complete(delete_when_complete) {}
   ~AioCompletionImp(){
     if (data != nullptr) {
       free(data);
@@ -18,18 +22,22 @@ public:
   }
   void complete(ssize_t r) {
     if (defined) {
-      if (--shared_count == 0 && defined) {
+      if (--shared_count == 0) {
+        cond.notify_all();
         Callback(r);
-        delete this;
-      } else {
-        return;
+        if (delete_when_complete) delete this;
       }
     } else {
-      delete this;
+      if (delete_when_complete) delete this;
     }
   }
   ssize_t get_return_value() {};
-  void wait_for_complete() {};
+  void wait_for_complete() {
+    if (shared_count > 0) {
+      std::unique_lock<std::mutex> l(cond_lock);
+      cond.wait(l);
+    }
+  };
   void set_reserved_ptr(void* ptr) {
     data = (char*)ptr;
   }
@@ -37,6 +45,9 @@ public:
   char* data;
   bool defined;
   std::atomic<int> shared_count;
+  std::mutex cond_lock;
+  std::condition_variable cond;
+  bool delete_when_complete;
 };
 
 }// hdcs
