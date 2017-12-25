@@ -69,6 +69,7 @@ HDCSCore::HDCSCore(std::string name, std::string config_name) {
 #endif
   }
 
+  printf("policy created.\n");
   go = true;
   main_thread = new std::thread(std::bind(&HDCSCore::process, this));
 
@@ -76,16 +77,16 @@ HDCSCore::HDCSCore(std::string name, std::string config_name) {
 
 HDCSCore::~HDCSCore() {
   go = false;
-  main_thread->join();
-  delete hdcs_op_threads;
+  //hdcs_op_threads->join();
+  //delete hdcs_op_threads;
   for (auto& hdcs_replica : replication_core_map) {
     ((hdcs_ioctx_t*)hdcs_replica.second)->conn->close();
     free((hdcs_ioctx_t*)hdcs_replica.second);
   }
   delete policy;
   delete block_guard;
-  main_thread->join();
-  delete main_thread;
+  //main_thread->join();
+  //delete main_thread;
 }
 
 void HDCSCore::close() {

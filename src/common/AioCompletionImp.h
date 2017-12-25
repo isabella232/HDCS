@@ -35,7 +35,9 @@ public:
   void wait_for_complete() {
     if (shared_count > 0) {
       std::unique_lock<std::mutex> l(cond_lock);
-      cond.wait(l);
+      while( shared_count > 0 ) {
+        cond.wait_for(l, std::chrono::milliseconds(50));
+      }
     }
   };
   void set_reserved_ptr(void* ptr) {
